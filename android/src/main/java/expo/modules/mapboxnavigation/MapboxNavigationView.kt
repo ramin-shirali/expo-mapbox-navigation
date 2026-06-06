@@ -93,6 +93,12 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
   private var theme: Map<String, Any?>? = null
 
   // MARK: Views
+  // ExpoView is a LinearLayout that, by default, does NOT re-layout native
+  // children when they call requestLayout() — a MapView then renders at 0x0
+  // (black screen). Opt into Android layout, and host everything in a FrameLayout
+  // so the maneuver banner / trip-progress footer overlay the full-screen map.
+  override val shouldUseAndroidLayout = true
+  private val root = FrameLayout(context)
   private val mapView = MapView(context)
   private val maneuverView = MapboxManeuverView(context)
   private val tripProgressView = MapboxTripProgressView(context)
@@ -219,22 +225,37 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
   }
 
   init {
-    addView(mapView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-
-    // Maneuver banner pinned to the top.
     addView(
+      root,
+      LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+    )
+    // Full-screen map.
+    root.addView(
+      mapView,
+      FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.MATCH_PARENT
+      )
+    )
+    // Maneuver banner pinned to the top.
+    root.addView(
       maneuverView,
-      LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+      FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+      ).apply {
         gravity = Gravity.TOP
         val m = dp(8)
         setMargins(m, m, m, 0)
       }
     )
-
     // Trip-progress footer pinned to the bottom.
-    addView(
+    root.addView(
       tripProgressView,
-      LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
+      FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.WRAP_CONTENT
+      ).apply {
         gravity = Gravity.BOTTOM
       }
     )
