@@ -57,6 +57,7 @@ public class MapboxNavigationView: ExpoView {
       guard pair.count == 2 else { return nil }
       return CLLocationCoordinate2D(latitude: pair[1], longitude: pair[0])
     }
+    NSLog("[BCMNav] setCoordinates raw=\(coords.count) parsed=\(coordinates.count) first=\(String(describing: coordinates.first)) last=\(String(describing: coordinates.last))")
     scheduleRebuild()
   }
 
@@ -93,9 +94,10 @@ public class MapboxNavigationView: ExpoView {
   }
 
   private func rebuildNavigation() {
-    guard coordinates.count >= 2 else { return }
+    NSLog("[BCMNav] rebuildNavigation coords=\(coordinates.count) hasVC=\(navigationViewController != nil)")
+    guard coordinates.count >= 2 else { NSLog("[BCMNav] skip: <2 coords"); return }
     // Only build once; a live reroute is handled by the SDK, not by remounting.
-    guard navigationViewController == nil else { return }
+    guard navigationViewController == nil else { NSLog("[BCMNav] skip: VC exists"); return }
 
     routeRequest?.cancel()
     let waypointCoordinates = coordinates
@@ -104,6 +106,7 @@ public class MapboxNavigationView: ExpoView {
     routeRequest = Task { [weak self] in
       guard let self else { return }
       do {
+        NSLog("[BCMNav] requesting route…")
         let options = NavigationRouteOptions(
           coordinates: waypointCoordinates,
           profileIdentifier: profile
@@ -112,9 +115,11 @@ public class MapboxNavigationView: ExpoView {
           .routingProvider()
           .calculateRoutes(options: options)
           .value
-        if Task.isCancelled { return }
+        NSLog("[BCMNav] route OK")
+        if Task.isCancelled { NSLog("[BCMNav] route task cancelled"); return }
         await MainActor.run { self.presentNavigation(with: navigationRoutes) }
       } catch {
+        NSLog("[BCMNav] route FAILED: \(error)")
         if Task.isCancelled { return }
         await MainActor.run {
           self.onError(["message": "route_calculation_failed: \(error.localizedDescription)"])
@@ -125,7 +130,9 @@ public class MapboxNavigationView: ExpoView {
 
   @MainActor
   private func presentNavigation(with navigationRoutes: NavigationRoutes) {
+    NSLog("[BCMNav] presentNavigation bounds=\(bounds) hostVC=\(findViewController() != nil)")
     guard let parent = findViewController() else {
+      NSLog("[BCMNav] no host VC")
       onError(["message": "no_host_view_controller"])
       return
     }
@@ -153,6 +160,7 @@ public class MapboxNavigationView: ExpoView {
     didStart = true
     setMuted(muted)
     observeProgress()
+    NSLog("[BCMNav] presented; subview frame=\(vc.view.frame)")
   }
 
   private func observeProgress() {

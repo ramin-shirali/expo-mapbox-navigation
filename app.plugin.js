@@ -141,6 +141,19 @@ function withPublicTokenInfoPlist(config, publicToken) {
   });
 }
 
+// The Nav SDK's RouteVoiceController.verifyBackgroundAudio() HARD-ASSERTS (crash,
+// EXC_BREAKPOINT) unless the app declares the `audio` background mode. `location`
+// is needed for background guidance. Ensure both, idempotently.
+function withNavBackgroundModes(config) {
+  return withInfoPlist(config, (cfg) => {
+    const modes = new Set(cfg.modResults.UIBackgroundModes || []);
+    modes.add("audio");
+    modes.add("location");
+    cfg.modResults.UIBackgroundModes = Array.from(modes);
+    return cfg;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Android — Maven repo + credentials, version pin, token resource, permissions.
 // ---------------------------------------------------------------------------
@@ -224,6 +237,7 @@ module.exports = function withMapboxNavigation(config, props = {}) {
   // iOS
   config = withMapboxNavIos(config);
   config = withPublicTokenInfoPlist(config, publicToken);
+  config = withNavBackgroundModes(config);
   // Android
   config = withMapboxNavAndroidRepo(config);
   config = withDownloadTokenGradleProperty(config, downloadToken);
