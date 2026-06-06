@@ -1,0 +1,66 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.mapboxnavigation'
+version = '0.1.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+useDefaultAndroidSdkVersions()
+
+buildscript {
+  // Allows the root project to override versions declared by this library.
+  ext.safeExtGet = { prop, fallback ->
+    rootProject.ext.has(prop) ? rootProject.ext.get(prop) : fallback
+  }
+}
+
+// Mapbox Nav SDK v3 ↔ Maps SDK pin (kept in lockstep by Mapbox since 3.16).
+// Must match @rnmapbox/maps' Maps core so a SINGLE MapboxMaps is resolved.
+def mapboxNavVersion = "3.20.1"
+def mapboxMapsVersion = "11.20.2"
+
+repositories {
+  // The authenticated Mapbox Maven repo. The download token is supplied as the
+  // `MAPBOX_DOWNLOADS_TOKEN` gradle property (config plugin + EAS env). The
+  // config plugin also adds this repo project-wide; declaring it here too lets
+  // this library resolve its own deps at configuration time.
+  maven {
+    url 'https://api.mapbox.com/downloads/v2/releases/maven'
+    authentication { create("basic", BasicAuthentication) }
+    credentials {
+      username = "mapbox"
+      password = project.findProperty("MAPBOX_DOWNLOADS_TOKEN")
+        ?: System.getenv("MAPBOX_DOWNLOADS_TOKEN") ?: ""
+    }
+  }
+}
+
+android {
+  namespace "expo.modules.mapboxnavigation"
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // Use the -ndk27 variants to match @rnmapbox/maps (which pulls the -ndk27
+  // Maps/common artifacts). Mixing ndk27 + non-ndk27 produces "Duplicate class"
+  // for every com.mapbox.maps/common module at :app:checkDebugDuplicateClasses.
+  // ndk27 is also the 16 KB-page-aligned (Android 15 / Play Store) variant.
+  implementation "com.mapbox.navigationcore:navigation-ndk27:${mapboxNavVersion}"
+  implementation "com.mapbox.navigationcore:ui-components-ndk27:${mapboxNavVersion}"
+  implementation "com.mapbox.navigationcore:ui-maps-ndk27:${mapboxNavVersion}"
+  implementation "com.mapbox.navigationcore:voice-ndk27:${mapboxNavVersion}"
+  implementation "com.mapbox.navigationcore:tripdata-ndk27:${mapboxNavVersion}"
+
+  // MapboxManeuverView / MapboxTripProgressView extend ConstraintLayout; the
+  // ui-components AAR doesn't expose it transitively, so declare it directly
+  // (without it: "Cannot access 'ConstraintLayout' which is a supertype of
+  // 'MapboxManeuverView'").
+  implementation "androidx.constraintlayout:constraintlayout:2.1.4"
+}
