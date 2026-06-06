@@ -76,6 +76,27 @@ import java.util.Locale
  * of package paths / observer signatures may need minor adjustment against the
  * exact resolved 3.20.1 artifacts on the first Android build (see NAVIGATION.md).
  */
+/**
+ * Process-wide navigation state so the trip session survives the nav view being
+ * detached (minimised). MapboxNavigationApp keeps the MapboxNavigation instance
+ * alive at app scope; we just avoid stopping the trip session on detach, and
+ * re-registering the observers on re-attach re-renders the ongoing route.
+ */
+object NavSession {
+  var active = false
+  var destinationKey: String? = null
+
+  /** Explicitly end navigation (the trip screen's "Stop"). */
+  fun stop() {
+    MapboxNavigationApp.current()?.let { nav ->
+      nav.setNavigationRoutes(emptyList())
+      nav.stopTripSession()
+    }
+    active = false
+    destinationKey = null
+  }
+}
+
 class MapboxNavigationView(context: Context, appContext: AppContext) :
   ExpoView(context, appContext) {
 
@@ -322,24 +343,32 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
   }
 
   override fun onDetachedFromWindow() {
+    // Minimise: detach observers + this view's voice player, but DO NOT stop the
+    // trip session — it keeps running so navigation resumes instantly. Use
+    // NavSession.stop() (trip screen "Stop") to actually end it.
     MapboxNavigationApp.unregisterObserver(navigationObserver)
-    if (sessionStarted) {
-      mapboxNavigation?.stopTripSession()
-      sessionStarted = false
-    }
     speechApi.cancel()
     voicePlayer.shutdown()
     super.onDetachedFromWindow()
   }
 
+  private fun thisDestinationKey(): String? =
+    coordinates.lastOrNull()?.let { "${it.latitude()},${it.longitude()}" }
+
   private fun startNavigationIfReady() {
     val nav = mapboxNavigation ?: return
     if (!styleReady) return
+    setMuted(muted)
+    // Resume: same destination already navigating → don't restart; the freshly
+    // re-registered RoutesObserver/RouteProgressObserver re-render the live route.
+    if (NavSession.active && NavSession.destinationKey == thisDestinationKey()) {
+      sessionStarted = true
+      return
+    }
     if (!sessionStarted) {
       nav.startTripSession()
       sessionStarted = true
     }
-    setMuted(muted)
     requestRouteIfReady()
   }
 
@@ -362,6 +391,8 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
       object : NavigationRouterCallback {
         override fun onRoutesReady(routes: List<NavigationRoute>, routerOrigin: String) {
           nav.setNavigationRoutes(routes)
+          NavSession.active = true
+          NavSession.destinationKey = thisDestinationKey()
         }
 
         override fun onFailure(reasons: List<RouterFailure>, routeOptions: RouteOptions) {

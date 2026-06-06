@@ -11,6 +11,12 @@ class ExpoMapboxNavigationModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("ExpoMapboxNavigation")
 
+    // True when a navigation session is alive (possibly minimised).
+    Function("isNavigationActive") { NavSession.active }
+
+    // Explicitly end navigation (the trip screen's "Stop" action).
+    Function("stopNavigation") { NavSession.stop() }
+
     View(MapboxNavigationView::class) {
       Events("onRouteProgress", "onArrival", "onCancel", "onReroute", "onError")
 

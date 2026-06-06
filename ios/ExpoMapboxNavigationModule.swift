@@ -12,6 +12,17 @@ public class ExpoMapboxNavigationModule: Module {
   public func definition() -> ModuleDefinition {
     Name("ExpoMapboxNavigation")
 
+    // True when a navigation session is alive (possibly minimised). Reads the
+    // nonisolated flag so it stays synchronous.
+    Function("isNavigationActive") { () -> Bool in
+      NavSessionFlags.active
+    }
+
+    // Explicitly end navigation (the trip screen's "Stop" action).
+    Function("stopNavigation") {
+      Task { @MainActor in NavigationSession.shared.stop() }
+    }
+
     View(MapboxNavigationView.self) {
       Events("onRouteProgress", "onArrival", "onCancel", "onReroute", "onError")
 

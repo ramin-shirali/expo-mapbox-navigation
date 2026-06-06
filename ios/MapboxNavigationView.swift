@@ -6,12 +6,56 @@ import CoreLocation
 import Combine
 import UIKit
 
+/// Process-wide navigation session. Owns the Mapbox provider and the live
+/// `NavigationViewController` so the trip session + voice guidance survive the
+/// nav screen being popped (minimised). The view re-attaches the SAME controller
+/// when the screen re-mounts → instant resume, no recalculation. Guidance keeps
+/// running in the background (audio + location background modes).
+/// Nonisolated mirror of "is navigation active", written on the main actor, so
+/// the module's synchronous `isNavigationActive()` can read it without hopping
+/// actors. (The Mapbox types below are @MainActor-isolated.)
+enum NavSessionFlags {
+  nonisolated(unsafe) static var active = false
+}
+
+@MainActor
+final class NavigationSession {
+  static let shared = NavigationSession()
+  let provider: MapboxNavigationProvider
+  /// The retained, still-running navigation UI. Detached from the view tree when
+  /// minimised, re-embedded on resume. nil = no active navigation.
+  var navigationViewController: NavigationViewController?
+  /// Identifies the active route's destination so we know whether to resume the
+  /// existing session or start a fresh one (e.g. pickup → drop-off).
+  var destinationKey: String?
+
+  private init() {
+    provider = MapboxNavigationProvider(coreConfig: CoreConfig())
+  }
+
+  var mapboxNavigation: MapboxNavigation { provider.mapboxNavigation }
+  var isActive: Bool { navigationViewController != nil }
+
+  /// Fully end navigation (explicit "Stop"), tearing down the session.
+  func stop() {
+    if let vc = navigationViewController {
+      vc.willMove(toParent: nil)
+      vc.view.removeFromSuperview()
+      vc.removeFromParent()
+    }
+    mapboxNavigation.tripSession().setToIdle()
+    navigationViewController = nil
+    destinationKey = nil
+    NavSessionFlags.active = false
+  }
+}
+
 /// Full-screen, voice-guided turn-by-turn navigation backed by the Mapbox
-/// Navigation SDK v3. Hosts the SDK's drop-in `NavigationViewController` as a
-/// child view controller pinned to this Expo view's bounds.
+/// Navigation SDK v3. Hosts the shared `NavigationSession`'s drop-in
+/// `NavigationViewController` as a child VC pinned to this Expo view's bounds.
 ///
 /// The SDK reads its access token from the app's Info.plist `MBXAccessToken`
-/// key (set in app.config.js), so we never set it from JS — that avoids the
+/// key (set by the config plugin), so we never set it from JS — that avoids the
 /// New-Architecture race that crashes the map (see NAVIGATION.md).
 public class MapboxNavigationView: ExpoView {
   // MARK: Events
@@ -21,24 +65,20 @@ public class MapboxNavigationView: ExpoView {
   let onReroute = EventDispatcher()
   let onError = EventDispatcher()
 
-  // MARK: Props (set via the Module's Prop handlers)
+  // MARK: Props
   private var coordinates: [CLLocationCoordinate2D] = []
   private var profileIdentifier: ProfileIdentifier = .automobileAvoidingTraffic
   private var muted = false
   private var theme: NavigationThemeRecord?
 
-  // MARK: Mapbox v3 stack
-  private let mapboxNavigationProvider: MapboxNavigationProvider
-  private var mapboxNavigation: MapboxNavigation { mapboxNavigationProvider.mapboxNavigation }
-  private var navigationViewController: NavigationViewController?
   private var subscriptions = Set<AnyCancellable>()
   private var routeRequest: Task<Void, Never>?
-  private var pendingRebuild = false
-  private var didStart = false
+  private var pendingAttach = false
+
+  private var session: NavigationSession { NavigationSession.shared }
+  private var mapboxNavigation: MapboxNavigation { session.mapboxNavigation }
 
   required init(appContext: AppContext? = nil) {
-    // CoreConfig() defaults to the Info.plist MBXAccessToken credentials.
-    mapboxNavigationProvider = MapboxNavigationProvider(coreConfig: CoreConfig())
     super.init(appContext: appContext)
     clipsToBounds = true
     backgroundColor = .black
@@ -46,7 +86,12 @@ public class MapboxNavigationView: ExpoView {
 
   deinit {
     routeRequest?.cancel()
-    teardownNavigation()
+    // Detach happens in didMoveToWindow(nil) — deinit can't touch @MainActor state.
+  }
+
+  public override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window == nil { detachKeepingSession() }
   }
 
   // MARK: - Prop setters
@@ -57,115 +102,123 @@ public class MapboxNavigationView: ExpoView {
       guard pair.count == 2 else { return nil }
       return CLLocationCoordinate2D(latitude: pair[1], longitude: pair[0])
     }
-    NSLog("[BCMNav] setCoordinates raw=\(coords.count) parsed=\(coordinates.count) first=\(String(describing: coordinates.first)) last=\(String(describing: coordinates.last))")
-    scheduleRebuild()
+    scheduleAttach()
   }
 
   func setProfile(_ value: String) {
     profileIdentifier = (value == "driving") ? .automobile : .automobileAvoidingTraffic
-    scheduleRebuild()
+    scheduleAttach()
   }
 
   func setMuted(_ value: Bool) {
     muted = value
-    // The drop-in NavigationViewController exposes its own mute control to the
-    // user; we mirror the JS-driven value onto the voice controller best-effort.
-    mapboxNavigationProvider.routeVoiceController.speechSynthesizer.muted = value
+    session.provider.routeVoiceController.speechSynthesizer.muted = value
   }
 
   func setTheme(_ value: NavigationThemeRecord?) {
-    theme = value
-    // Brand theming (custom Day/Night styles) is applied in Phase 3; storing it
-    // now so the prop is wired end-to-end.
+    theme = value // Brand theming is Phase 3; wired end-to-end.
   }
 
-  // MARK: - Route lifecycle
+  // MARK: - Attach / resume / start
 
-  /// Props arrive one-by-one in a render batch; coalesce them into a single
-  /// rebuild on the next runloop tick so we request the route only once.
-  private func scheduleRebuild() {
-    guard !pendingRebuild else { return }
-    pendingRebuild = true
+  private func key(for coords: [CLLocationCoordinate2D]) -> String {
+    coords.map { "\($0.latitude),\($0.longitude)" }.joined(separator: ";")
+  }
+
+  /// Props arrive one-by-one; coalesce into a single attach on the next tick.
+  private func scheduleAttach() {
+    guard !pendingAttach else { return }
+    pendingAttach = true
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
-      self.pendingRebuild = false
-      self.rebuildNavigation()
+      self.pendingAttach = false
+      self.attach()
     }
   }
 
-  private func rebuildNavigation() {
-    NSLog("[BCMNav] rebuildNavigation coords=\(coordinates.count) hasVC=\(navigationViewController != nil)")
-    guard coordinates.count >= 2 else { NSLog("[BCMNav] skip: <2 coords"); return }
-    // Only build once; a live reroute is handled by the SDK, not by remounting.
-    guard navigationViewController == nil else { NSLog("[BCMNav] skip: VC exists"); return }
+  private func attach() {
+    guard coordinates.count >= 2, let host = findViewController() else { return }
+    let wantKey = key(for: coordinates)
 
+    // Resume: the same destination is already navigating → re-embed the live VC.
+    if let vc = session.navigationViewController, session.destinationKey == wantKey {
+      embed(vc, in: host)
+      return
+    }
+
+    // A different destination is active (e.g. pickup → drop-off): end it first.
+    if session.navigationViewController != nil {
+      session.stop()
+    }
+
+    // Start a fresh session.
     routeRequest?.cancel()
-    let waypointCoordinates = coordinates
+    let waypoints = coordinates
     let profile = profileIdentifier
-
     routeRequest = Task { [weak self] in
       guard let self else { return }
       do {
-        NSLog("[BCMNav] requesting route…")
-        let options = NavigationRouteOptions(
-          coordinates: waypointCoordinates,
-          profileIdentifier: profile
-        )
-        let navigationRoutes = try await self.mapboxNavigation
-          .routingProvider()
-          .calculateRoutes(options: options)
-          .value
-        NSLog("[BCMNav] route OK")
-        if Task.isCancelled { NSLog("[BCMNav] route task cancelled"); return }
-        await MainActor.run { self.presentNavigation(with: navigationRoutes) }
-      } catch {
-        NSLog("[BCMNav] route FAILED: \(error)")
+        let options = NavigationRouteOptions(coordinates: waypoints, profileIdentifier: profile)
+        let routes = try await self.mapboxNavigation.routingProvider().calculateRoutes(options: options).value
         if Task.isCancelled { return }
         await MainActor.run {
-          self.onError(["message": "route_calculation_failed: \(error.localizedDescription)"])
+          guard let host = self.findViewController() else {
+            self.onError(["message": "no_host_view_controller"])
+            return
+          }
+          let navigationOptions = NavigationOptions(
+            mapboxNavigation: self.mapboxNavigation,
+            voiceController: self.session.provider.routeVoiceController,
+            eventsManager: self.session.provider.eventsManager()
+          )
+          let vc = NavigationViewController(navigationRoutes: routes, navigationOptions: navigationOptions)
+          self.session.navigationViewController = vc
+          self.session.destinationKey = wantKey
+          NavSessionFlags.active = true
+          self.embed(vc, in: host)
         }
+      } catch {
+        if Task.isCancelled { return }
+        await MainActor.run { self.onError(["message": "route_calculation_failed: \(error.localizedDescription)"]) }
       }
     }
   }
 
-  @MainActor
-  private func presentNavigation(with navigationRoutes: NavigationRoutes) {
-    NSLog("[BCMNav] presentNavigation bounds=\(bounds) hostVC=\(findViewController() != nil)")
-    guard let parent = findViewController() else {
-      NSLog("[BCMNav] no host VC")
-      onError(["message": "no_host_view_controller"])
-      return
+  private func embed(_ vc: NavigationViewController, in host: UIViewController) {
+    // Move the (possibly previously-attached) VC under this view's host.
+    if vc.parent !== host {
+      if vc.parent != nil {
+        vc.willMove(toParent: nil)
+        vc.view.removeFromSuperview()
+        vc.removeFromParent()
+      }
+      host.addChild(vc)
+      vc.view.frame = bounds
+      vc.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      addSubview(vc.view)
+      vc.didMove(toParent: host)
+    } else if vc.view.superview !== self {
+      vc.view.frame = bounds
+      vc.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      addSubview(vc.view)
     }
-
-    let navigationOptions = NavigationOptions(
-      mapboxNavigation: mapboxNavigation,
-      voiceController: mapboxNavigationProvider.routeVoiceController,
-      eventsManager: mapboxNavigationProvider.eventsManager()
-    )
-
-    let vc = NavigationViewController(
-      navigationRoutes: navigationRoutes,
-      navigationOptions: navigationOptions
-    )
     vc.delegate = self
-    vc.modalPresentationStyle = .fullScreen
-
-    parent.addChild(vc)
-    vc.view.frame = bounds
-    vc.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-    addSubview(vc.view)
-    vc.didMove(toParent: parent)
-
-    navigationViewController = vc
-    didStart = true
     setMuted(muted)
     observeProgress()
-    NSLog("[BCMNav] presented; subview frame=\(vc.view.frame)")
+  }
+
+  /// Detach the live VC from this view WITHOUT ending the session (minimise).
+  private func detachKeepingSession() {
+    subscriptions.removeAll()
+    guard let vc = session.navigationViewController, vc.view.superview === self else { return }
+    vc.willMove(toParent: nil)
+    vc.view.removeFromSuperview()
+    vc.removeFromParent()
+    // The VC (and its trip session + voice) stays retained by NavigationSession.
   }
 
   private func observeProgress() {
-    // Continuous progress lives on the navigation controller's publisher in v3
-    // (delegate carries UI-level callbacks only).
+    subscriptions.removeAll()
     mapboxNavigation.navigation().routeProgress
       .receive(on: DispatchQueue.main)
       .sink { [weak self] state in
@@ -179,29 +232,13 @@ public class MapboxNavigationView: ExpoView {
       .store(in: &subscriptions)
   }
 
-  private func teardownNavigation() {
-    subscriptions.removeAll()
-    if didStart {
-      mapboxNavigation.tripSession().setToIdle()
-      didStart = false
-    }
-    if let vc = navigationViewController {
-      vc.willMove(toParent: nil)
-      vc.view.removeFromSuperview()
-      vc.removeFromParent()
-      navigationViewController = nil
-    }
-  }
-
-  // MARK: - Layout
-
   public override func layoutSubviews() {
     super.layoutSubviews()
-    navigationViewController?.view.frame = bounds
+    if let vc = session.navigationViewController, vc.view.superview === self {
+      vc.view.frame = bounds
+    }
   }
 
-  /// Walk the responder chain to find the owning UIViewController (the host for
-  /// our child NavigationViewController) — no dependency on RN's UIView category.
   private func findViewController() -> UIViewController? {
     var responder: UIResponder? = self
     while let current = responder {
@@ -219,7 +256,8 @@ extension MapboxNavigationView: NavigationViewControllerDelegate {
     _ navigationViewController: NavigationViewController,
     byCanceling canceled: Bool
   ) {
-    teardownNavigation()
+    // The SDK's own end-navigation control: fully stop + notify JS to pop.
+    NavigationSession.shared.stop()
     onCancel()
   }
 
@@ -227,7 +265,6 @@ extension MapboxNavigationView: NavigationViewControllerDelegate {
     _ navigationViewController: NavigationViewController,
     didArriveAt waypoint: Waypoint
   ) -> Bool {
-    // Only emit arrival for the final destination (last waypoint).
     if waypoint.coordinate == coordinates.last {
       onArrival()
     }
