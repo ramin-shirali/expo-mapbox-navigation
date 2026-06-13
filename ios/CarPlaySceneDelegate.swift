@@ -1,6 +1,7 @@
 import CarPlay
 import MapboxNavigationCore
 import MapboxNavigationUIKit
+import UIKit
 
 /// Bridges the CarPlay head unit to the SAME process-wide navigation session the
 /// phone uses (`NavigationSession.shared`). Mapbox's `CarPlayManager` runs the
@@ -64,14 +65,33 @@ final class CarPlayBridge: NSObject {
 }
 
 // All `CarPlayManagerDelegate` methods have default implementations
-// (`UnimplementedLogging`), so we override only what we need.
-extension CarPlayBridge: CarPlayManagerDelegate {
+// (`UnimplementedLogging`), so we override only what we need. The protocol isn't
+// @MainActor and its requirements are nonisolated, which Swift 6 won't let a
+// @MainActor type satisfy (even via the defaults). `@preconcurrency` relaxes that
+// isolation check for this conformance — safe because CarPlay always calls its
+// delegate on the main thread.
+extension CarPlayBridge: @preconcurrency CarPlayManagerDelegate {
   /// Ending navigation from the head unit ends the shared trip session so the
   /// phone stops guiding too.
   func carPlayManagerDidEndNavigation(_ carPlayManager: CarPlayManager, byCanceling canceled: Bool) {
     if canceled {
       NavigationSession.shared.stop()
     }
+  }
+
+  // These two defaults are `@_spi(MapboxInternal)` in the SDK, so a plain import
+  // can't see them — they must be implemented explicitly. We want the SDK's stock
+  // behaviour, so they're empty / nil (no custom CarPlay bar buttons).
+  func carPlayManager(_ carPlayManager: CarPlayManager, didSetup navigationMapView: NavigationMapView) {}
+
+  func carPlayManager(
+    _ carPlayManager: CarPlayManager,
+    leadingNavigationBarButtonsCompatibleWith traitCollection: UITraitCollection,
+    in carPlayTemplate: CPMapTemplate,
+    for activity: CarPlayActivity,
+    cameraState: NavigationCameraState
+  ) -> [CPBarButton]? {
+    nil
   }
 }
 

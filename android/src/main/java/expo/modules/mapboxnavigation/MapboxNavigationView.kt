@@ -102,6 +102,7 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
 
   // MARK: Events
   private val onRouteProgress by EventDispatcher()
+  private val onWaypointArrival by EventDispatcher()
   private val onArrival by EventDispatcher()
   private val onCancel by EventDispatcher()
   private val onReroute by EventDispatcher()
@@ -209,7 +210,10 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
       val legIndex = routeProgress.currentLegProgress?.legIndex ?: return
       val waypointIndex = legIndex + 1
       if (waypointIndex in 1 until (coordinates.size - 1)) {
-        onWaypointArrival(mapOf("index" to waypointIndex))
+        // Qualify the call: inside this ArrivalObserver, the bare name
+        // `onWaypointArrival` resolves to the overridden observer method (which
+        // takes a RouteProgress), not the outer view's EventDispatcher.
+        this@MapboxNavigationView.onWaypointArrival(mapOf("index" to waypointIndex))
       }
     }
     override fun onNextRouteLegStart(routeLegProgress: RouteLegProgress) {}

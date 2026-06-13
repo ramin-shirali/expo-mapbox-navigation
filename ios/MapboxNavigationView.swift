@@ -273,7 +273,7 @@ extension MapboxNavigationView: NavigationViewControllerDelegate {
   public func navigationViewController(
     _ navigationViewController: NavigationViewController,
     didArriveAt waypoint: Waypoint
-  ) -> Bool {
+  ) {
     // Map the reached waypoint back to its index in the coordinates we passed.
     // The last index is the final destination (→ onArrival); any earlier index
     // is an intermediate stop (→ onWaypointArrival). The SDK may snap the
@@ -284,7 +284,6 @@ extension MapboxNavigationView: NavigationViewControllerDelegate {
     } else if index >= 0 {
       onWaypointArrival(["index": index])
     }
-    return true
   }
 
   /// Index of the passed-in coordinate closest to `target` (−1 if none).
@@ -305,7 +304,7 @@ extension MapboxNavigationView: NavigationViewControllerDelegate {
 
   public func navigationViewController(
     _ navigationViewController: NavigationViewController,
-    willRerouteFrom location: CLLocation
+    willRerouteFrom location: CLLocation?
   ) {
     onReroute()
   }
