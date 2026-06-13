@@ -60,6 +60,7 @@ final class NavigationSession {
 public class MapboxNavigationView: ExpoView {
   // MARK: Events
   let onRouteProgress = EventDispatcher()
+  let onWaypointArrival = EventDispatcher()
   let onArrival = EventDispatcher()
   let onCancel = EventDispatcher()
   let onReroute = EventDispatcher()
@@ -265,10 +266,33 @@ extension MapboxNavigationView: NavigationViewControllerDelegate {
     _ navigationViewController: NavigationViewController,
     didArriveAt waypoint: Waypoint
   ) -> Bool {
-    if waypoint.coordinate == coordinates.last {
+    // Map the reached waypoint back to its index in the coordinates we passed.
+    // The last index is the final destination (→ onArrival); any earlier index
+    // is an intermediate stop (→ onWaypointArrival). The SDK may snap the
+    // waypoint to the road, so match by nearest coordinate rather than equality.
+    let index = nearestCoordinateIndex(to: waypoint.coordinate)
+    if index == coordinates.count - 1 {
       onArrival()
+    } else if index >= 0 {
+      onWaypointArrival(["index": index])
     }
     return true
+  }
+
+  /// Index of the passed-in coordinate closest to `target` (−1 if none).
+  private func nearestCoordinateIndex(to target: CLLocationCoordinate2D) -> Int {
+    var best = -1
+    var bestDist = Double.greatestFiniteMagnitude
+    for (i, c) in coordinates.enumerated() {
+      let dLat = c.latitude - target.latitude
+      let dLng = c.longitude - target.longitude
+      let dist = dLat * dLat + dLng * dLng
+      if dist < bestDist {
+        bestDist = dist
+        best = i
+      }
+    }
+    return best
   }
 
   public func navigationViewController(

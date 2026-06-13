@@ -18,7 +18,7 @@ class ExpoMapboxNavigationModule : Module() {
     Function("stopNavigation") { NavSession.stop() }
 
     View(MapboxNavigationView::class) {
-      Events("onRouteProgress", "onArrival", "onCancel", "onReroute", "onError")
+      Events("onRouteProgress", "onWaypointArrival", "onArrival", "onCancel", "onReroute", "onError")
 
       Prop("coordinates") { view: MapboxNavigationView, coords: List<List<Double>> ->
         view.setCoordinates(coords)

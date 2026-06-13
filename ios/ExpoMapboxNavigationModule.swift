@@ -24,7 +24,7 @@ public class ExpoMapboxNavigationModule: Module {
     }
 
     View(MapboxNavigationView.self) {
-      Events("onRouteProgress", "onArrival", "onCancel", "onReroute", "onError")
+      Events("onRouteProgress", "onWaypointArrival", "onArrival", "onCancel", "onReroute", "onError")
 
       Prop("coordinates") { (view: MapboxNavigationView, coords: [[Double]]) in
         view.setCoordinates(coords)

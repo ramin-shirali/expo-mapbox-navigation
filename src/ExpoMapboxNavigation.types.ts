@@ -15,6 +15,16 @@ export interface RouteProgress {
   fractionTraveled: number;
 }
 
+/** Payload for {@link MapboxNavigationViewProps.onWaypointArrival}. */
+export interface WaypointArrival {
+  /**
+   * Index of the reached waypoint in the {@link MapboxNavigationViewProps.coordinates}
+   * array. The origin is `0`, so intermediate stops are `1..coordinates.length - 2`.
+   * The final destination fires {@link MapboxNavigationViewProps.onArrival}, not this.
+   */
+  index: number;
+}
+
 /** Brand/appearance hooks. The native side maps these onto the SDK's day/night styling. */
 export interface NavigationTheme {
   /** Primary accent (route line / maneuver tint), e.g. the brand gold. Hex string. */
@@ -26,8 +36,12 @@ export interface NavigationTheme {
 export interface MapboxNavigationViewProps {
   /**
    * Ordered waypoints `[origin, ...stops, destination]` in `[lng, lat]` order.
-   * v1 passes `[origin, destination]`. The route is (re)calculated whenever this
-   * changes; the first coordinate is the start, the last is the final destination.
+   * The first coordinate is the start, the last is the final destination, and
+   * any coordinates in between are intermediate stops routed through in order.
+   * Reaching an intermediate stop fires {@link onWaypointArrival}; reaching the
+   * last fires {@link onArrival}. The route is (re)calculated whenever the full
+   * list changes (so editing a stop re-routes; an unchanged list resumes the
+   * live session with no recalculation).
    */
   coordinates: LngLat[];
   /** Routing profile. Defaults to `"driving-traffic"`. */
@@ -39,6 +53,11 @@ export interface MapboxNavigationViewProps {
 
   /** Fired continuously as the chauffeur progresses along the route. */
   onRouteProgress?: (e: RouteProgress) => void;
+  /**
+   * Fired each time an **intermediate** waypoint (a stop, not the final
+   * destination) is reached, carrying its index in {@link coordinates}.
+   */
+  onWaypointArrival?: (e: WaypointArrival) => void;
   /** Fired once the final destination is reached. */
   onArrival?: () => void;
   /** Fired when the user exits/cancels navigation from the native UI. */

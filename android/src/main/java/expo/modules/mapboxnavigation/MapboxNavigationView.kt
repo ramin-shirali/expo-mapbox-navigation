@@ -202,7 +202,16 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
   }
 
   private val arrivalObserver = object : ArrivalObserver {
-    override fun onWaypointArrival(routeProgress: RouteProgress) {}
+    override fun onWaypointArrival(routeProgress: RouteProgress) {
+      // The leg that just ended; the reached waypoint is its end, i.e. index
+      // legIndex + 1 in the coordinates we passed (origin is 0). Guard against
+      // the final destination (handled by onFinalDestinationArrival).
+      val legIndex = routeProgress.currentLegProgress?.legIndex ?: return
+      val waypointIndex = legIndex + 1
+      if (waypointIndex in 1 until (coordinates.size - 1)) {
+        onWaypointArrival(mapOf("index" to waypointIndex))
+      }
+    }
     override fun onNextRouteLegStart(routeLegProgress: RouteLegProgress) {}
     override fun onFinalDestinationArrival(routeProgress: RouteProgress) {
       onArrival(mapOf())
@@ -352,8 +361,12 @@ class MapboxNavigationView(context: Context, appContext: AppContext) :
     super.onDetachedFromWindow()
   }
 
+  // Key the session on the FULL waypoint chain (not just the final destination)
+  // so editing an intermediate stop re-routes, while an unchanged chain resumes
+  // the live session. Mirrors the iOS `key(for:)`.
   private fun thisDestinationKey(): String? =
-    coordinates.lastOrNull()?.let { "${it.latitude()},${it.longitude()}" }
+    if (coordinates.isEmpty()) null
+    else coordinates.joinToString(";") { "${it.latitude()},${it.longitude()}" }
 
   private fun startNavigationIfReady() {
     val nav = mapboxNavigation ?: return

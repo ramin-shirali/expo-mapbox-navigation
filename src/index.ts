@@ -4,6 +4,7 @@ export { MapboxNavigationView, isNavigationAvailable } from "./ExpoMapboxNavigat
 export type {
   MapboxNavigationViewProps,
   RouteProgress,
+  WaypointArrival,
   NavigationProfile,
   NavigationTheme,
   LngLat
