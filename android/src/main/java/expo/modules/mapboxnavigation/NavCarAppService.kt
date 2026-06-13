@@ -27,9 +27,14 @@ import androidx.car.app.validation.HostValidator
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.mapbox.api.directions.v5.models.BannerInstructions
+import com.mapbox.common.location.Location
+import com.mapbox.geojson.Point
+import com.mapbox.maps.CameraOptions
+import com.mapbox.maps.EdgeInsets
 import com.mapbox.maps.MapInitOptions
 import com.mapbox.maps.MapSurface
 import com.mapbox.maps.Style
+import com.mapbox.maps.plugin.LocationPuck2D
 import com.mapbox.maps.plugin.locationcomponent.location
 import com.mapbox.navigation.base.options.NavigationOptions
 import com.mapbox.navigation.base.trip.model.RouteProgress
@@ -37,7 +42,10 @@ import com.mapbox.navigation.core.MapboxNavigation
 import com.mapbox.navigation.core.directions.session.RoutesObserver
 import com.mapbox.navigation.core.lifecycle.MapboxNavigationApp
 import com.mapbox.navigation.core.lifecycle.MapboxNavigationObserver
+import com.mapbox.navigation.core.trip.session.LocationMatcherResult
+import com.mapbox.navigation.core.trip.session.LocationObserver
 import com.mapbox.navigation.core.trip.session.RouteProgressObserver
+import com.mapbox.navigation.ui.maps.location.NavigationLocationProvider
 import com.mapbox.navigation.ui.maps.route.line.api.MapboxRouteLineApi
 import com.mapbox.navigation.ui.maps.route.line.api.MapboxRouteLineView
 import com.mapbox.navigation.ui.maps.route.line.model.MapboxRouteLineApiOptions
@@ -108,15 +116,24 @@ class NavCarScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
     carMap?.onRoutes(result.navigationRoutes)
   }
 
+  private val locationObserver = object : LocationObserver {
+    override fun onNewRawLocation(rawLocation: Location) {}
+    override fun onNewLocationMatcherResult(result: LocationMatcherResult) {
+      carMap?.onLocation(result.enhancedLocation, result.keyPoints)
+    }
+  }
+
   private val navObserver = object : MapboxNavigationObserver {
     override fun onAttached(mapboxNavigation: MapboxNavigation) {
       mapboxNavigation.registerRouteProgressObserver(routeProgressObserver)
       mapboxNavigation.registerRoutesObserver(routesObserver)
+      mapboxNavigation.registerLocationObserver(locationObserver)
     }
 
     override fun onDetached(mapboxNavigation: MapboxNavigation) {
       mapboxNavigation.unregisterRouteProgressObserver(routeProgressObserver)
       mapboxNavigation.unregisterRoutesObserver(routesObserver)
+      mapboxNavigation.unregisterLocationObserver(locationObserver)
     }
   }
 
@@ -252,6 +269,8 @@ class NavCarScreen(carContext: CarContext) : Screen(carContext), SurfaceCallback
  */
 private class CarMapRenderer(private val carContext: CarContext) {
   private var mapSurface: MapSurface? = null
+  private val navigationLocationProvider = NavigationLocationProvider()
+  private var visibleArea: Rect? = null
 
   private val routeLineApi = MapboxRouteLineApi(MapboxRouteLineApiOptions.Builder().build())
   private val routeLineView =
@@ -263,7 +282,11 @@ private class CarMapRenderer(private val carContext: CarContext) {
     ms.surfaceChanged(width, height)
     ms.onStart()
     ms.mapboxMap.loadStyle(Style.DARK) {
+      // Drive the puck from the navigation's enhanced location (fed by onLocation)
+      // rather than the raw device provider, so it matches the guidance.
       ms.location.apply {
+        setLocationProvider(navigationLocationProvider)
+        locationPuck = LocationPuck2D()
         enabled = true
         pulsingEnabled = false
       }
@@ -272,7 +295,31 @@ private class CarMapRenderer(private val carContext: CarContext) {
   }
 
   fun onVisibleAreaChanged(visibleArea: Rect) {
-    // Hook for inset-aware camera padding; map keeps rendering full-bleed for now.
+    // Keep the puck out from under the head unit's chrome by padding the camera
+    // to the host-reported safe area.
+    this.visibleArea = visibleArea
+  }
+
+  /** Move the puck to the latest enhanced fix and follow it (a NavigationCamera
+   * needs a MapView, so on a raw MapSurface we follow manually). */
+  fun onLocation(enhanced: Location, keyPoints: List<Location>) {
+    val ms = mapSurface ?: return
+    navigationLocationProvider.changePosition(enhanced, keyPoints)
+    val area = visibleArea
+    val padding = if (area != null) {
+      EdgeInsets(area.top.toDouble(), area.left.toDouble(), area.bottom.toDouble(), area.right.toDouble())
+    } else {
+      EdgeInsets(0.0, 0.0, 0.0, 0.0)
+    }
+    ms.mapboxMap.setCamera(
+      CameraOptions.Builder()
+        .center(Point.fromLngLat(enhanced.longitude, enhanced.latitude))
+        .zoom(16.0)
+        .pitch(45.0)
+        .bearing(enhanced.bearing ?: 0.0)
+        .padding(padding)
+        .build()
+    )
   }
 
   fun onRoutes(routes: List<com.mapbox.navigation.base.route.NavigationRoute>) {
