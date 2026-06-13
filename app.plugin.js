@@ -24,6 +24,7 @@
 const {
   withDangerousMod,
   withInfoPlist,
+  withEntitlementsPlist,
   withProjectBuildGradle,
   withGradleProperties,
   withStringsXml,
@@ -155,6 +156,45 @@ function withNavBackgroundModes(config) {
 }
 
 // ---------------------------------------------------------------------------
+// iOS CarPlay — scene manifest + entitlement (opt-in).
+//
+// The app keeps its legacy AppDelegate window for the phone UI; we declare ONLY
+// the CarPlay scene role, so iOS instantiates `EMNCarPlaySceneDelegate` (our
+// module's class) for the head unit while the phone app stays on the AppDelegate
+// lifecycle. `UIApplicationSupportsMultipleScenes` must be true for CarPlay.
+//
+// ⚠️ Gated behind the `carPlay` plugin prop (or EXPO_PUBLIC_ENABLE_CARPLAY=1)
+// because the `com.apple.developer.carplay-maps` entitlement requires Apple's
+// approval + a matching provisioning profile; adding it before the grant breaks
+// code-signing. Leave it off until the entitlement is granted to the bundle id.
+// ---------------------------------------------------------------------------
+function withCarPlaySceneManifest(config) {
+  return withInfoPlist(config, (cfg) => {
+    const plist = cfg.modResults;
+    const manifest = plist.UIApplicationSceneManifest || {};
+    manifest.UIApplicationSupportsMultipleScenes = true;
+    const configs = manifest.UISceneConfigurations || {};
+    configs.CPTemplateApplicationSceneSessionRoleApplication = [
+      {
+        UISceneClassName: "CPTemplateApplicationScene",
+        UISceneConfigurationName: "MapboxCarPlay",
+        UISceneDelegateClassName: "EMNCarPlaySceneDelegate"
+      }
+    ];
+    manifest.UISceneConfigurations = configs;
+    plist.UIApplicationSceneManifest = manifest;
+    return cfg;
+  });
+}
+
+function withCarPlayEntitlement(config) {
+  return withEntitlementsPlist(config, (cfg) => {
+    cfg.modResults["com.apple.developer.carplay-maps"] = true;
+    return cfg;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Android — Maven repo + credentials, version pin, token resource, permissions.
 // ---------------------------------------------------------------------------
 const ANDROID_MARKER = "// [expo-mapbox-navigation]";
@@ -234,10 +274,21 @@ module.exports = function withMapboxNavigation(config, props = {}) {
     process.env.RNMAPBOX_MAPS_DOWNLOAD_TOKEN ||
     "";
 
+  // CarPlay is opt-in: the entitlement needs Apple's grant (see above). Default
+  // off so normal builds are unaffected; enable once the entitlement is granted.
+  const carPlay =
+    props.carPlay === true ||
+    process.env.EXPO_PUBLIC_ENABLE_CARPLAY === "1" ||
+    process.env.EXPO_ENABLE_CARPLAY === "1";
+
   // iOS
   config = withMapboxNavIos(config);
   config = withPublicTokenInfoPlist(config, publicToken);
   config = withNavBackgroundModes(config);
+  if (carPlay) {
+    config = withCarPlaySceneManifest(config);
+    config = withCarPlayEntitlement(config);
+  }
   // Android
   config = withMapboxNavAndroidRepo(config);
   config = withDownloadTokenGradleProperty(config, downloadToken);

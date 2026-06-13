@@ -29,6 +29,12 @@ final class NavigationSession {
   /// existing session or start a fresh one (e.g. pickup → drop-off).
   var destinationKey: String?
 
+  /// Set by `CarPlayBridge` when a CarPlay head unit is connected; invoked
+  /// whenever a fresh route starts so CarPlay can mirror the phone's route.
+  /// Decoupled via a closure so this file never imports the CarPlay stack and
+  /// the bridge/manager is only created once CarPlay actually connects.
+  var onRouteStarted: (() -> Void)?
+
   private init() {
     provider = MapboxNavigationProvider(coreConfig: CoreConfig())
   }
@@ -177,6 +183,8 @@ public class MapboxNavigationView: ExpoView {
           self.session.destinationKey = wantKey
           NavSessionFlags.active = true
           self.embed(vc, in: host)
+          // Mirror the just-started route onto CarPlay if a head unit is up.
+          self.session.onRouteStarted?()
         }
       } catch {
         if Task.isCancelled { return }
