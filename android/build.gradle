@@ -63,4 +63,10 @@ dependencies {
   // (without it: "Cannot access 'ConstraintLayout' which is a supertype of
   // 'MapboxManeuverView'").
   implementation "androidx.constraintlayout:constraintlayout:2.1.4"
+
+  // Android Auto — the Android for Cars App Library. Mapbox Nav v3 dropped its
+  // dedicated Android Auto artifact (the v2 `ui-androidauto`/MapboxCarApp), so we
+  // build the CarAppService + NavigationTemplate directly on androidx.car.app and
+  // render the Mapbox map to the car surface via MapSurface (Maps v11).
+  implementation "androidx.car.app:app:1.4.0"
 }

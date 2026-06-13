@@ -8,4 +8,25 @@
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <!-- Android Auto (the Car App Library). These library-manifest entries merge
+       into the host app. The head unit projects our NavCarAppService; the phone
+       app is otherwise unaffected. Both features are optional so phones without
+       Android Auto still install. Testing needs the app enabled in Android Auto's
+       developer settings (or the Desktop Head Unit). -->
+  <uses-feature android:name="android.hardware.type.automotive" android:required="false" />
+  <uses-feature android:name="android.software.car.templates_host" android:required="false" />
+
+  <application>
+    <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="1" />
+
+    <service
+      android:name="expo.modules.mapboxnavigation.NavCarAppService"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="androidx.car.app.CarAppService" />
+        <category android:name="androidx.car.app.category.NAVIGATION" />
+      </intent-filter>
+    </service>
+  </application>
 </manifest>
